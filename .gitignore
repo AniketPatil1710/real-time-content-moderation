@@ -1,0 +1,14 @@
+/data/
+/models/
+.env
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+.venv/
+venv/
+.venv_phase1/
+.claude/
+.DS_Store

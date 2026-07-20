@@ -1,0 +1,34 @@
+# Initial training config (Phase 3). Values may be tuned once GPU time is available;
+# any change must be reflected here, never hardcoded in scripts.
+seed: 42
+
+model:
+  name: distilbert-base-uncased
+  max_length: 128
+
+training:
+  learning_rate: 3.0e-5
+  batch_size: 32
+  epochs: 3
+  fp16: true
+  early_stopping_metric: eval_macro_f1
+  early_stopping_patience: 1
+
+data:
+  civil_comments_binarize_threshold: 0.5
+  max_rows: 300000
+  split_ratios:
+    train: 0.8
+    val: 0.1
+    test: 0.1
+
+baseline:
+  tfidf:
+    word_ngram_range: [1, 2]
+    char_ngram_range: [3, 5]
+    max_features_word: 50000
+    max_features_char: 50000
+  logistic_regression:
+    C: 1.0
+    max_iter: 1000
+    class_weight: balanced
