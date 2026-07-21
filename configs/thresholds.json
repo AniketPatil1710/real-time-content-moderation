@@ -1,0 +1,54 @@
+{
+  "block_precision_target": 0.9,
+  "flag_precision_target": 0.5,
+  "labels": {
+    "toxic": {
+      "block_threshold": 0.9934045672416687,
+      "block_precision": 0.9008097165991903,
+      "block_recall": 0.36898839137645106,
+      "flag_threshold": 0.20180945098400116,
+      "flag_precision": 0.5,
+      "flag_recall": 0.824212271973466
+    },
+    "severe_toxic": {
+      "block_threshold": 0.9998780488967896,
+      "block_precision": 1.0,
+      "block_recall": 0.08,
+      "flag_threshold": 0.953973650932312,
+      "flag_precision": 0.5,
+      "flag_recall": 0.8
+    },
+    "obscene": {
+      "block_threshold": 0.9989796280860901,
+      "block_precision": 0.9024390243902439,
+      "block_recall": 0.43023255813953487,
+      "flag_threshold": 0.26248207688331604,
+      "flag_precision": 0.5,
+      "flag_recall": 0.8488372093023255
+    },
+    "threat": {
+      "block_threshold": 0.9999243021011353,
+      "block_precision": 1.0,
+      "block_recall": 0.06451612903225806,
+      "flag_threshold": 0.9971439242362976,
+      "flag_precision": 0.5,
+      "flag_recall": 0.20967741935483872
+    },
+    "insult": {
+      "block_threshold": 0.9941376447677612,
+      "block_precision": 0.9010989010989011,
+      "block_recall": 0.3787528868360277,
+      "flag_threshold": 0.28100550174713135,
+      "flag_precision": 0.5,
+      "flag_recall": 0.8383371824480369
+    },
+    "identity_hate": {
+      "block_threshold": 0.9997432827949524,
+      "block_precision": 1.0,
+      "block_recall": 0.004484304932735426,
+      "flag_threshold": 0.9714174270629883,
+      "flag_precision": 0.5,
+      "flag_recall": 0.4439461883408072
+    }
+  }
+}

@@ -5,17 +5,17 @@
 > Keep it under ~150 lines — this is a summary, not a log. Prune stale detail.
 
 ## Current Status
-- **Current phase:** Phase 3 done; Phase 4 (evaluation & thresholds) not started
+- **Current phase:** Phase 4 done; Phase 5 (ONNX export/quantization/benchmark) not started
 - **Last session date:** 2026-07-21
-- **Last thing completed:** Phase 3 training run completed on Colab T4 GPU via `notebooks/02_train_colab.ipynb` (data pulled from Drive, `--checkpoint-dir` pointed directly at a Drive path so `trainer.save_model()`/`tokenizer.save_pretrained()` in `train.py` wrote the final model + tokenizer straight to Drive — not just local/ephemeral Colab storage). Result: macro F1 0.5513 (vs baseline 0.4449), macro PR-AUC 0.5857, micro F1 0.6392 — beats baseline per Phases.md acceptance. Every per-label F1 and PR-AUC improved over baseline; `threat` (F1 0.346) and `identity_hate` (F1 0.423) remain the weakest labels — expected, given they're the rarest positives. `metrics/distilbert.json` copied down from Colab output and saved locally (not git-ignored — safe to commit). The fine-tuned model itself lives on Drive only, not in this local repo (`models/` is git-ignored anyway).
-- **Next immediate task:** Phase 4 — write `src/evaluation/thresholds.py` (currently a one-line stub): per-label PR curves → `metrics/pr_curves/`, per-label thresholds (max recall s.t. precision ≥ 0.90) → `configs/thresholds.json`, a flag-band lower threshold for allow/flag/block, and `metrics/error_analysis.md` (50 worst FP/FN). This needs the fine-tuned model for inference again, so most naturally runs in the same Colab/Drive environment rather than locally.
+- **Last thing completed:** Phase 4 threshold selection run on Colab against the Drive-saved fine-tuned model + local test set. All three acceptance artifacts now in the repo: `configs/thresholds.json` (per-label `block_threshold`/`flag_threshold`), `metrics/pr_curves/*.png` (6 files), `metrics/error_analysis.md` (50 worst FP + 50 worst FN, aggregated, ranked by confidence). Key finding: `threat` and `identity_hate` need thresholds >=0.999 to hit 90% precision, and recall at that point collapses to 6.5% and 0.4% respectively — the "block" tier will catch almost nothing for those two labels in practice. Their reported block_precision of exactly 1.0 is likely an artifact of very few (1-2) predicted positives at that threshold, not a robust estimate — flag this honestly in the README limitations section later, don't present it as a clean 100%. Separately, skimming `error_analysis.md`'s top false positives for `obscene` showed several that look like correct toxic-language calls the model got right but the dataset ground truth may have mislabeled (e.g. explicit profanity marked non-obscene) — worth a mention in limitations (dataset label noise), not something to "fix" in the model.
+- **Next immediate task:** Phase 5 — `src/models/export_onnx.py` (Optimum export → dynamic INT8 quantization → `models/onnx/`), re-run the shared evaluator on the ONNX model → `metrics/onnx_quantized.json` (verify F1 drop < 1% vs PyTorch), `src/evaluation/benchmark.py` (CPU, batch=1, seq_len=128, 50 warmup + 1000 timed runs, p50/p95/p99 + hardware info) → `metrics/latency_benchmark.json`. Benchmark should run on CPU (this is a latency-vs-baseline-hardware measurement, not something GPU-bound) — can likely run locally rather than needing Colab, but the ONNX export step itself still needs the fine-tuned model, which only lives on Drive right now (never pulled to this local repo — `models/` is git-ignored anyway, so that's expected, not a gap to fix).
 
 ## Phase Checklist
 - [x] Phase 0 — Skeleton
 - [x] Phase 1 — Data pipeline
 - [x] Phase 2 — Baseline (`metrics/baseline.json`: macro F1 0.4449, macro PR-AUC 0.4775)
 - [x] Phase 3 — DistilBERT fine-tune (`metrics/distilbert.json`: macro F1 0.5513, macro PR-AUC 0.5857, beats baseline; model saved to Drive via `notebooks/02_train_colab.ipynb`)
-- [ ] Phase 4 — Evaluation & thresholds
+- [x] Phase 4 — Evaluation & thresholds (`configs/thresholds.json`, `metrics/pr_curves/`, `metrics/error_analysis.md` all present)
 - [ ] Phase 5 — ONNX + benchmark
 - [ ] Phase 6 — FastAPI serving
 - [ ] Phase 7 — Demo + README
