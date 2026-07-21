@@ -5,16 +5,16 @@
 > Keep it under ~150 lines — this is a summary, not a log. Prune stale detail.
 
 ## Current Status
-- **Current phase:** Phase 2 done; Phase 3 (DistilBERT) code written, NOT yet run (needs Colab GPU)
-- **Last session date:** 2026-07-20/21
-- **Last thing completed:** `src/models/train.py` written — HF `Trainer` subclass (`WeightedTrainer`) with `BCEWithLogitsLoss(pos_weight=...)`, pos_weight computed from real training-set label frequencies via `compute_pos_weight()`, early stopping on val macro-F1 (`configs/training.yaml: training.early_stopping_metric/patience`), saves to `models/distilbert-finetuned/`, evaluates on test via the SAME `src.evaluation.evaluate.evaluate()` used for the baseline, and logs a loud pass/fail comparison against `metrics/baseline.json` (macro F1 must beat 0.4449 per Phases.md acceptance). All torch/transformers imports are deferred inside functions (not at module level) so the file still imports and its pure-logic helper (`compute_pos_weight`) is unit-testable on the lightweight local venv without installing torch — `tests/test_train.py` covers it. **NOT YET RUN** — this requires a GPU (Colab), which is outside this local session entirely. User needs to: upload `data/processed/*.parquet` to Drive, clone/upload the repo into Colab, `pip install -r requirements.txt` there (the heavy torch/transformers install, fine on Colab), then `python -m src.models.train`.
-- **Next immediate task:** Run Phase 3 training in Colab (see above), then come back with `metrics/distilbert.json` + `models/distilbert-finetuned/` results to confirm and move to Phase 4.
+- **Current phase:** Phase 3 done; Phase 4 (evaluation & thresholds) not started
+- **Last session date:** 2026-07-21
+- **Last thing completed:** Phase 3 training run completed on Colab T4 GPU via `notebooks/02_train_colab.ipynb` (data pulled from Drive, `--checkpoint-dir` pointed directly at a Drive path so `trainer.save_model()`/`tokenizer.save_pretrained()` in `train.py` wrote the final model + tokenizer straight to Drive — not just local/ephemeral Colab storage). Result: macro F1 0.5513 (vs baseline 0.4449), macro PR-AUC 0.5857, micro F1 0.6392 — beats baseline per Phases.md acceptance. Every per-label F1 and PR-AUC improved over baseline; `threat` (F1 0.346) and `identity_hate` (F1 0.423) remain the weakest labels — expected, given they're the rarest positives. `metrics/distilbert.json` copied down from Colab output and saved locally (not git-ignored — safe to commit). The fine-tuned model itself lives on Drive only, not in this local repo (`models/` is git-ignored anyway).
+- **Next immediate task:** Phase 4 — write `src/evaluation/thresholds.py` (currently a one-line stub): per-label PR curves → `metrics/pr_curves/`, per-label thresholds (max recall s.t. precision ≥ 0.90) → `configs/thresholds.json`, a flag-band lower threshold for allow/flag/block, and `metrics/error_analysis.md` (50 worst FP/FN). This needs the fine-tuned model for inference again, so most naturally runs in the same Colab/Drive environment rather than locally.
 
 ## Phase Checklist
 - [x] Phase 0 — Skeleton
 - [x] Phase 1 — Data pipeline
 - [x] Phase 2 — Baseline (`metrics/baseline.json`: macro F1 0.4449, macro PR-AUC 0.4775)
-- [ ] Phase 3 — DistilBERT fine-tune (code ready in `src/models/train.py`; awaiting a Colab GPU run from the user)
+- [x] Phase 3 — DistilBERT fine-tune (`metrics/distilbert.json`: macro F1 0.5513, macro PR-AUC 0.5857, beats baseline; model saved to Drive via `notebooks/02_train_colab.ipynb`)
 - [ ] Phase 4 — Evaluation & thresholds
 - [ ] Phase 5 — ONNX + benchmark
 - [ ] Phase 6 — FastAPI serving
@@ -24,9 +24,9 @@
 ## Key Numbers So Far (source of truth: metrics/*.json)
 | Metric | Baseline | DistilBERT | ONNX-INT8 |
 |--------|----------|------------|-----------|
-| Macro F1 | 0.4449 | TBD | TBD |
-| Macro PR-AUC | 0.4775 | TBD | TBD |
-| Micro F1 | 0.5564 | TBD | TBD |
+| Macro F1 | 0.4449 | 0.5513 | TBD |
+| Macro PR-AUC | 0.4775 | 0.5857 | TBD |
+| Micro F1 | 0.5564 | 0.6392 | TBD |
 | Precision @ recall | (see per-label in metrics/baseline.json) | TBD | TBD |
 | p95 latency (CPU, bs=1, len=128) | — | TBD | TBD |
 
@@ -40,6 +40,7 @@
 7. 2026-07-20: Baseline evaluator threshold fixed at 0.5 for reporting (`evaluate()` default) — this is NOT the same as the operational allow/flag/block thresholds, which come from Phase 4's PR-curve analysis and live in `configs/thresholds.json`. Don't conflate the two.
 8. 2026-07-21: `pos_weight` in `train.py` is the literal, uncapped `n_negative/n_positive` per label, straight from Phases.md's spec ("pos_weight from training-set label frequencies") — NOT capped or sqrt-scaled. Given `severe_toxic`'s ~0.08% positive rate in train, expect a pos_weight around 1200+ for it. This could cause training instability (huge gradients from rare-label examples); if that happens in Colab, it's a known risk to investigate (try capping pos_weight, e.g. `np.minimum(pos_weight, some_max)`) rather than a surprise bug.
 9. 2026-07-21: `train.py` defers ALL torch/transformers imports inside functions (never at module top-level) specifically so `compute_pos_weight` stays unit-testable on the lightweight local venv (`.venv_phase1`, no torch installed). Keep this pattern if train.py is edited — don't move torch imports to the top of the file.
+10. 2026-07-21: Phase 4 `thresholds.py` design choices confirmed with the user (Phases.md was ambiguous on both): (a) `metrics/error_analysis.md` is 50 worst false positives + 50 worst false negatives **aggregated across all 6 labels** (ranked by model confidence), not 50-per-label — keeps the file readable. (b) The flag-band threshold is **per-label** (`flag_threshold` alongside `block_threshold` in `configs/thresholds.json`), same as the block threshold, since a single global cutoff would be meaningless across labels with very different score distributions (e.g. `severe_toxic` vs `toxic`). Same deferred-import pattern as Decision #9 applies here too: `matplotlib` and `transformers`/`torch` imports are inside functions, not at module top, so `select_thresholds`/`build_error_analysis` stay unit-testable on `.venv_phase1`.
 
 ## Known Issues / Tech Debt
 - **`pytest` (and likely other pandas/sklearn-heavy scripts) genuinely takes ~26 minutes to run on this host, period — this is NOT a tool/sandbox-specific artifact.** Earlier this session it looked like automated/backgrounded runs were uniquely "stalled" while the user's own Terminal was fast; that theory was WRONG. A full `pytest -q` run timed end-to-end in the user's own Terminal took exactly 1580s (26m 19s) for just 18 tests. The host is simply very slow for this kind of workload (likely disk + memory pressure — see disk space note below). **Practical implication: don't try to "fix" the slowness or diagnose it further — it's real, budget for it.** When running anything nontrivial (pytest, preprocess, baseline training), either wait it out patiently in the background, or ask the user to kick it off in their own terminal and check back later — don't assume 10-15 min of low CPU means something is broken.
