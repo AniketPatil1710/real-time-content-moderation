@@ -103,12 +103,18 @@ def build_pytorch_predict_one(model_dir: Path, text: str, max_length: int) -> Ca
     return predict_one
 
 
-def build_onnx_predict_one(model_dir: Path, text: str, max_length: int) -> Callable[[], None]:
+def build_onnx_predict_one(
+    model_dir: Path, text: str, max_length: int, file_name: str | None = None
+) -> Callable[[], None]:
+    """`file_name` must be export_onnx.QUANTIZED_FILE_NAME for the INT8 directory —
+    Optimum's default from_pretrained() lookup only finds "model.onnx"."""
     from optimum.onnxruntime import ORTModelForSequenceClassification
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
-    model = ORTModelForSequenceClassification.from_pretrained(str(model_dir), provider="CPUExecutionProvider")
+    model = ORTModelForSequenceClassification.from_pretrained(
+        str(model_dir), provider="CPUExecutionProvider", file_name=file_name
+    )
     encoding = tokenizer(text, truncation=True, max_length=max_length, padding="max_length", return_tensors="pt")
 
     def predict_one() -> None:
@@ -129,10 +135,12 @@ def run_benchmark(
     max_length = config["model"]["max_length"]
     text = str(pd.read_parquet(processed_dir / "test.parquet").iloc[0]["comment_text"])
 
+    from src.models.export_onnx import QUANTIZED_FILE_NAME
+
     builders = {
         "pytorch": lambda: build_pytorch_predict_one(pytorch_model_dir, text, max_length),
         "onnx_fp32": lambda: build_onnx_predict_one(onnx_fp32_dir, text, max_length),
-        "onnx_int8": lambda: build_onnx_predict_one(onnx_int8_dir, text, max_length),
+        "onnx_int8": lambda: build_onnx_predict_one(onnx_int8_dir, text, max_length, file_name=QUANTIZED_FILE_NAME),
     }
 
     results = {}

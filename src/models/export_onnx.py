@@ -30,6 +30,10 @@ ONNX_DIR = Path("models/onnx")
 METRICS_PATH = Path("metrics/onnx_quantized.json")
 PYTORCH_METRICS_PATH = Path("metrics/distilbert.json")
 MAX_F1_DROP = 0.01
+# ORTQuantizer.quantize() names its output after the source file's stem + "_quantized"
+# (source is always "model.onnx" from export_fp32) — not the "model.onnx" default
+# ORTModelForSequenceClassification.from_pretrained() looks for.
+QUANTIZED_FILE_NAME = "model_quantized.onnx"
 
 
 def export_fp32(model_dir: Path, output_dir: Path) -> Path:
@@ -60,14 +64,20 @@ def quantize_int8(fp32_dir: Path, output_dir: Path) -> Path:
     return output_dir
 
 
-def make_onnx_predict_fn(model_dir: Path, max_length: int, batch_size: int = 64):
-    """Wrap a saved ONNX model (FP32 or INT8) into an evaluate()-compatible predict_fn."""
+def make_onnx_predict_fn(model_dir: Path, max_length: int, batch_size: int = 64, file_name: str | None = None):
+    """Wrap a saved ONNX model (FP32 or INT8) into an evaluate()-compatible predict_fn.
+
+    `file_name` must be set to QUANTIZED_FILE_NAME for a directory produced by
+    quantize_int8() — Optimum's default from_pretrained() lookup only finds "model.onnx".
+    """
     import torch
     from optimum.onnxruntime import ORTModelForSequenceClassification
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
-    model = ORTModelForSequenceClassification.from_pretrained(str(model_dir), provider="CPUExecutionProvider")
+    model = ORTModelForSequenceClassification.from_pretrained(
+        str(model_dir), provider="CPUExecutionProvider", file_name=file_name
+    )
 
     def predict_fn(texts: list[str]) -> np.ndarray:
         all_probs = []
@@ -128,7 +138,7 @@ def run_export(
     int8_dir = quantize_int8(fp32_dir, onnx_dir / "int8")
 
     test_texts, y_test = load_split(processed_dir, "test", label_names)
-    predict_fn = make_onnx_predict_fn(int8_dir, max_length)
+    predict_fn = make_onnx_predict_fn(int8_dir, max_length, file_name=QUANTIZED_FILE_NAME)
     metrics = evaluate(predict_fn, test_texts, y_test, label_names)
     save_metrics(metrics, metrics_path)
     logger.info("ONNX-INT8 macro F1: %.4f, macro PR-AUC: %.4f", metrics["macro_f1"], metrics["macro_pr_auc"])
