@@ -57,6 +57,15 @@ class ModerationModel:
         return scores, latency_ms
 
 
+def label_band(score: float, label_thresholds: dict[str, Any]) -> str:
+    """Single label's band: allow / flag / block, from its own PR-curve-derived thresholds."""
+    if score >= label_thresholds["block_threshold"]:
+        return "block"
+    if score >= label_thresholds["flag_threshold"]:
+        return "flag"
+    return "allow"
+
+
 def decide(scores: dict[str, float], thresholds: dict[str, Any]) -> str:
     """Per-label decision from configs/thresholds.json, overall = most severe label.
 
@@ -66,13 +75,7 @@ def decide(scores: dict[str, float], thresholds: dict[str, Any]) -> str:
     """
     overall = "allow"
     for label, score in scores.items():
-        label_thresholds = thresholds["labels"][label]
-        if score >= label_thresholds["block_threshold"]:
-            label_decision = "block"
-        elif score >= label_thresholds["flag_threshold"]:
-            label_decision = "flag"
-        else:
-            label_decision = "allow"
+        label_decision = label_band(score, thresholds["labels"][label])
         if DECISION_SEVERITY[label_decision] > DECISION_SEVERITY[overall]:
             overall = label_decision
     return overall
