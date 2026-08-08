@@ -5,11 +5,10 @@
 > Keep it under ~150 lines — this is a summary, not a log. Prune stale detail.
 
 ## Current Status
-- **Current phase:** Phase 4 done; Phase 5 (ONNX export/quantization/benchmark) code written + unit-tested, NOT yet run
-- **Last session date:** 2026-07-21
-- **Last thing completed:** Wrote `src/models/export_onnx.py` (Optimum FP32 export → INT8 dynamic quantization via `AutoQuantizationConfig.avx2` — chosen over `avx512_vnni` for broader x86_64 compatibility since the exact Colab CPU isn't known in advance — → `models/onnx/{fp32,int8}/`, re-evaluates INT8 with the same shared evaluator, `f1_drop_within_budget()` gates against the 1% Phases.md budget) and `src/evaluation/benchmark.py` (CPU-forced via `model.to("cpu")`/`provider="CPUExecutionProvider"` regardless of runtime accelerator, batch=1, seq_len=128, 50 warmup + 1000 timed runs, p50/p95/p99, `get_hardware_info()` reads `/proc/cpuinfo` on Linux or `sysctl` on macOS). Both defer torch/transformers/optimum imports inside functions (same pattern as Decision #9/#10). Pure-logic tests (`tests/test_export_onnx.py`, `tests/test_benchmark.py`, 8 tests) all pass on `.venv_phase1`. Extended `notebooks/02_train_colab.ipynb` with sections 7-8 to run both scripts on Colab against the Drive-saved model and copy results back — includes a note recommending a CPU-only Colab runtime (Runtime → None) for a fairer benchmark, since GPU-attached instances often get a weaker host CPU.
-- **User decision confirmed 2026-07-21:** Phase 5 execution stays on Colab (not local), because this Mac has only ~4.1GB free disk and a full `torch+transformers+optimum+onnxruntime` local install was judged too risky. Accuracy/latency comparisons will therefore document Colab's CPU, not a fixed local machine — expected and fine, not a shortcut to flag later.
-- **Next immediate task:** Run Phase 5 in Colab (sections 7-8 of the notebook) against the model already saved to Drive from Phase 3, then bring back `metrics/onnx_quantized.json` and `metrics/latency_benchmark.json` (plus optionally the `models/onnx/` files, though those aren't required in git since `models/` is git-ignored) to close out Phase 5.
+- **Current phase:** Phase 5 done (accuracy passes; latency target NOT met — see below and Decision #12); Phase 6 (FastAPI serving) not started
+- **Last session date:** 2026-07-22
+- **Last thing completed:** Ran Phase 5 on Colab. `metrics/onnx_quantized.json`: ONNX-INT8 macro F1 0.5547 — actually *higher* than PyTorch's 0.5513 (+0.0034), well within the 1% drop budget; `f1_drop_within_budget()` correctly reported this as passing. `metrics/latency_benchmark.json`: hardware was Colab's free-tier CPU (`Intel(R) Xeon(R) CPU @ 2.00GHz`, only 2 vCPUs) — p95 latency PyTorch 192.3ms, ONNX-FP32 189.3ms, **ONNX-INT8 162.4ms**. Quantization gave a real ~15% p95 reduction over PyTorch, but Phases.md's acceptance target is p95 < 50ms, so this is a **3x miss**, driven by the weak shared Colab hardware rather than a code problem. Hit a real bug along the way (now fixed, see Decision #11): `ORTQuantizer.quantize()` names its output `model_quantized.onnx`, not the `model.onnx` default `ORTModelForSequenceClassification.from_pretrained()` looks for — both `export_onnx.py` and `benchmark.py` now pass `file_name=QUANTIZED_FILE_NAME` explicitly when loading an INT8 directory.
+- **Next immediate task:** Phase 6 — FastAPI serving (`src/serving/app.py`, `POST /moderate`, `GET /health`, Pydantic schemas, `tests/test_api.py` with TestClient). Loads the ONNX session (INT8, since it passed accuracy) at lifespan startup and returns per-label scores + allow/flag/block decision (using `configs/thresholds.json`) + measured latency_ms per request.
 
 ## Phase Checklist
 - [x] Phase 0 — Skeleton
@@ -17,7 +16,7 @@
 - [x] Phase 2 — Baseline (`metrics/baseline.json`: macro F1 0.4449, macro PR-AUC 0.4775)
 - [x] Phase 3 — DistilBERT fine-tune (`metrics/distilbert.json`: macro F1 0.5513, macro PR-AUC 0.5857, beats baseline; model saved to Drive via `notebooks/02_train_colab.ipynb`)
 - [x] Phase 4 — Evaluation & thresholds (`configs/thresholds.json`, `metrics/pr_curves/`, `metrics/error_analysis.md` all present)
-- [ ] Phase 5 — ONNX + benchmark
+- [x] Phase 5 — ONNX + benchmark (`metrics/onnx_quantized.json`, `metrics/latency_benchmark.json` present; accuracy passes, **latency target (p95<50ms) NOT met on Colab's weak CPU** — see Decision #12)
 - [ ] Phase 6 — FastAPI serving
 - [ ] Phase 7 — Demo + README
 - [ ] Phase 8 — Extras (optional)
@@ -25,11 +24,11 @@
 ## Key Numbers So Far (source of truth: metrics/*.json)
 | Metric | Baseline | DistilBERT | ONNX-INT8 |
 |--------|----------|------------|-----------|
-| Macro F1 | 0.4449 | 0.5513 | TBD |
-| Macro PR-AUC | 0.4775 | 0.5857 | TBD |
-| Micro F1 | 0.5564 | 0.6392 | TBD |
-| Precision @ recall | (see per-label in metrics/baseline.json) | TBD | TBD |
-| p95 latency (CPU, bs=1, len=128) | — | TBD | TBD |
+| Macro F1 | 0.4449 | 0.5513 | 0.5547 |
+| Macro PR-AUC | 0.4775 | 0.5857 | 0.5873 |
+| Micro F1 | 0.5564 | 0.6392 | 0.6477 |
+| Precision @ recall | (see per-label in metrics/baseline.json) | (see configs/thresholds.json) | not re-run per-label |
+| p95 latency (CPU, bs=1, len=128, Colab 2-vCPU Xeon) | — | 192.3ms | 162.4ms (target <50ms — NOT met, see Decision #12) |
 
 ## Decisions Made (append-only; never silently reverse — see Rules.md)
 1. 2026-07-20: Civil Comments toxicity binarized at ≥0.5 (per `configs/training.yaml: data.civil_comments_binarize_threshold`) — matches Jigsaw 2018 convention, documented in `preprocess.py` module docstring.
@@ -42,6 +41,8 @@
 8. 2026-07-21: `pos_weight` in `train.py` is the literal, uncapped `n_negative/n_positive` per label, straight from Phases.md's spec ("pos_weight from training-set label frequencies") — NOT capped or sqrt-scaled. Given `severe_toxic`'s ~0.08% positive rate in train, expect a pos_weight around 1200+ for it. This could cause training instability (huge gradients from rare-label examples); if that happens in Colab, it's a known risk to investigate (try capping pos_weight, e.g. `np.minimum(pos_weight, some_max)`) rather than a surprise bug.
 9. 2026-07-21: `train.py` defers ALL torch/transformers imports inside functions (never at module top-level) specifically so `compute_pos_weight` stays unit-testable on the lightweight local venv (`.venv_phase1`, no torch installed). Keep this pattern if train.py is edited — don't move torch imports to the top of the file.
 10. 2026-07-21: Phase 4 `thresholds.py` design choices confirmed with the user (Phases.md was ambiguous on both): (a) `metrics/error_analysis.md` is 50 worst false positives + 50 worst false negatives **aggregated across all 6 labels** (ranked by model confidence), not 50-per-label — keeps the file readable. (b) The flag-band threshold is **per-label** (`flag_threshold` alongside `block_threshold` in `configs/thresholds.json`), same as the block threshold, since a single global cutoff would be meaningless across labels with very different score distributions (e.g. `severe_toxic` vs `toxic`). Same deferred-import pattern as Decision #9 applies here too: `matplotlib` and `transformers`/`torch` imports are inside functions, not at module top, so `select_thresholds`/`build_error_analysis` stay unit-testable on `.venv_phase1`.
+11. 2026-07-22: `ORTQuantizer.quantize(save_dir=...)` names its output file `model_quantized.onnx`, NOT `model.onnx` — `ORTModelForSequenceClassification.from_pretrained()`'s default lookup only finds `model.onnx` and raised on the first real Colab run of `export_onnx.py`. Fixed by adding `QUANTIZED_FILE_NAME = "model_quantized.onnx"` in `export_onnx.py` and passing `file_name=QUANTIZED_FILE_NAME` explicitly wherever an INT8 directory is loaded (both `export_onnx.make_onnx_predict_fn` and `benchmark.build_onnx_predict_one`). If either file is touched again and INT8 loading breaks, check this first before assuming it's a new bug.
+12. 2026-07-22: Phase 5's ONNX-INT8 p95 latency (162.4ms) does NOT meet Phases.md's <50ms acceptance target — measured on Colab's free-tier shared hardware (`Intel(R) Xeon(R) CPU @ 2.00GHz`, 2 vCPUs only). User explicitly chose to accept and document this honestly rather than re-benchmark on stronger hardware (Colab Pro or freeing local disk for this Mac's M3) — see the AskUserQuestion exchange this session. **Do not silently claim this target was met in the README or anywhere else** — the real number is 162.4ms p95, 3x over budget, and the reason (weak shared CPU, not a code/model problem) must be stated alongside it. If the user later wants a stronger number, re-run `notebooks/02_train_colab.ipynb` sections 7-8 on better hardware — the code itself needs no changes.
 
 ## Known Issues / Tech Debt
 - **`pytest` (and likely other pandas/sklearn-heavy scripts) genuinely takes ~26 minutes to run on this host, period — this is NOT a tool/sandbox-specific artifact.** Earlier this session it looked like automated/backgrounded runs were uniquely "stalled" while the user's own Terminal was fast; that theory was WRONG. A full `pytest -q` run timed end-to-end in the user's own Terminal took exactly 1580s (26m 19s) for just 18 tests. The host is simply very slow for this kind of workload (likely disk + memory pressure — see disk space note below). **Practical implication: don't try to "fix" the slowness or diagnose it further — it's real, budget for it.** When running anything nontrivial (pytest, preprocess, baseline training), either wait it out patiently in the background, or ask the user to kick it off in their own terminal and check back later — don't assume 10-15 min of low CPU means something is broken.
