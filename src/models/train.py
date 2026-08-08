@@ -40,6 +40,21 @@ def compute_pos_weight(y: np.ndarray) -> np.ndarray:
     return n_neg / n_pos
 
 
+def compute_focal_alpha(y: np.ndarray) -> np.ndarray:
+    """alpha[i] = n_negative_i / n_total (Lin et al. 2017 RetinaNet alpha_t convention).
+
+    Upweights the rare positive class's loss term, like pos_weight, but bounded in
+    [0,1] rather than an unbounded ratio — pos_weight hits ~1200x for severe_toxic
+    (Memory.md Decision #8's flagged instability risk), which this avoids by
+    construction. Used with MultiLabelFocalLoss, not BCEWithLogitsLoss's pos_weight
+    (the two parameterizations aren't interchangeable — see Memory.md Decision #14).
+    """
+    n_pos = y.sum(axis=0)
+    assert (n_pos > 0).all(), "compute_focal_alpha: a label has zero positive examples in training data"
+    n_total = len(y)
+    return (n_total - n_pos) / n_total
+
+
 def _compute_metrics(eval_pred: Any) -> dict[str, float]:
     """HF Trainer eval callback: macro F1 at threshold 0.5, for early-stopping monitoring only.
 
@@ -79,17 +94,57 @@ def _build_training_args(config: dict[str, Any], checkpoint_dir: Path):
     )
 
 
+def _make_loss_fn(config: dict[str, Any], pos_weight: np.ndarray, focal_alpha: np.ndarray):
+    """Build the configured loss module: "bce_pos_weight" (Phase 3 original) or "focal" (default,
+    see Memory.md Decision #14). Both are per-label-imbalance-aware; kept switchable via
+    configs/training.yaml so a focal-loss run can be compared against the original baseline
+    rather than silently replacing it (Rules.md: never fabricate an improvement, always compare).
+    """
+    import torch
+    from torch import nn
+
+    loss_name = config["training"].get("loss", "focal")
+    if loss_name == "bce_pos_weight":
+        pos_weight_tensor = torch.tensor(pos_weight, dtype=torch.float32)
+        return nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+
+    if loss_name == "focal":
+        gamma = config["training"].get("focal_gamma", 2.0)
+        alpha_tensor = torch.tensor(focal_alpha, dtype=torch.float32)
+
+        class MultiLabelFocalLoss(nn.Module):
+            """Binary focal loss (Lin et al. 2017), applied per-label. FL(p_t) = -alpha_t *
+            (1-p_t)^gamma * log(p_t). gamma=2.0 default: literature-supported across alpha
+            values for imbalanced classification (gamma=5 consistently underperforms)."""
+
+            def __init__(self, alpha: torch.Tensor, gamma: float) -> None:
+                super().__init__()
+                self.alpha = alpha
+                self.gamma = gamma
+
+            def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+                alpha = self.alpha.to(logits.device)
+                bce = nn.functional.binary_cross_entropy_with_logits(logits, labels, reduction="none")
+                pt = torch.exp(-bce)
+                alpha_t = alpha * labels + (1 - alpha) * (1 - labels)
+                focal_weight = alpha_t * (1 - pt) ** self.gamma
+                return (focal_weight * bce).mean()
+
+        return MultiLabelFocalLoss(alpha_tensor, gamma)
+
+    raise ValueError(f"Unknown training.loss config value: {loss_name!r} (expected 'focal' or 'bce_pos_weight')")
+
+
 def build_trainer(
     config: dict[str, Any],
     label_names: list[str],
     train_df: pd.DataFrame,
     val_df: pd.DataFrame,
     pos_weight: np.ndarray,
+    focal_alpha: np.ndarray,
     checkpoint_dir: Path,
 ):
-    """Build the HF Trainer: model, tokenizer, datasets, pos_weight-ed loss, early stopping."""
-    import torch
-    from torch import nn
+    """Build the HF Trainer: model, tokenizer, datasets, configured imbalance-aware loss, early stopping."""
     from transformers import AutoModelForSequenceClassification, AutoTokenizer, EarlyStoppingCallback, Trainer
 
     from src.data.dataset import ToxicCommentsDataset
@@ -102,16 +157,19 @@ def build_trainer(
     )
     train_dataset = ToxicCommentsDataset(train_df, tokenizer, max_length, label_names)
     val_dataset = ToxicCommentsDataset(val_df, tokenizer, max_length, label_names)
-    pos_weight_tensor = torch.tensor(pos_weight, dtype=torch.float32)
+    loss_fn = _make_loss_fn(config, pos_weight, focal_alpha)
 
     class WeightedTrainer(Trainer):
-        """Trainer with BCEWithLogitsLoss(pos_weight=...) instead of HF's unweighted default."""
+        """Trainer with the configured imbalance-aware loss instead of HF's unweighted default."""
 
         def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
             labels = inputs.pop("labels")
             outputs = model(**inputs)
-            loss_fct = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor.to(outputs.logits.device))
-            loss = loss_fct(outputs.logits, labels)
+            # BCEWithLogitsLoss registers pos_weight as a buffer, so .to() moves it correctly;
+            # MultiLabelFocalLoss handles its own per-call device transfer inside forward().
+            # Called every step (cheap no-op once on the right device) so this stays correct
+            # even before HF's Trainer has moved the model to its training device.
+            loss = loss_fn.to(outputs.logits.device)(outputs.logits, labels)
             return (loss, outputs) if return_outputs else loss
 
     patience = config["training"]["early_stopping_patience"]
@@ -188,10 +246,15 @@ def run_train(processed_dir: Path, checkpoint_dir: Path, metrics_path: Path, bas
     train_df = pd.read_parquet(processed_dir / "train.parquet")
     val_df = pd.read_parquet(processed_dir / "val.parquet")
 
-    pos_weight = compute_pos_weight(train_df[label_names].to_numpy(dtype=int))
+    y_train = train_df[label_names].to_numpy(dtype=int)
+    pos_weight = compute_pos_weight(y_train)
+    focal_alpha = compute_focal_alpha(y_train)
+    loss_name = config["training"].get("loss", "focal")
+    logger.info("Using loss=%s", loss_name)
     logger.info("pos_weight per label: %s", dict(zip(label_names, pos_weight.round(2).tolist())))
+    logger.info("focal_alpha per label: %s", dict(zip(label_names, focal_alpha.round(3).tolist())))
 
-    trainer, tokenizer = build_trainer(config, label_names, train_df, val_df, pos_weight, checkpoint_dir)
+    trainer, tokenizer = build_trainer(config, label_names, train_df, val_df, pos_weight, focal_alpha, checkpoint_dir)
     trainer.train()
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)

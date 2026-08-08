@@ -13,6 +13,10 @@ training:
   fp16: true
   early_stopping_metric: eval_macro_f1
   early_stopping_patience: 1
+  # "focal" (default) or "bce_pos_weight" (original Phase 3 loss, kept for ablation
+  # comparison). See Memory.md Decision #14 for the literature review behind this.
+  loss: focal
+  focal_gamma: 2.0
 
 data:
   civil_comments_binarize_threshold: 0.5

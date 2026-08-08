@@ -12,9 +12,16 @@ ever containing real toxic/offensive language (Rules.md).
 """
 
 import json
+import sys
 from pathlib import Path
 
 import streamlit as st
+
+# `streamlit run demo/streamlit_app.py` puts demo/ on sys.path, not the project
+# root — unlike `python -m`, which is how every other entry point in this repo
+# is invoked. Add the root explicitly so `from src...` resolves regardless of
+# the cwd streamlit was launched from.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.data.preprocess import load_label_names, load_training_config
 from src.models.export_onnx import QUANTIZED_FILE_NAME
