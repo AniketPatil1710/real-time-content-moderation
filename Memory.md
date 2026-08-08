@@ -5,10 +5,11 @@
 > Keep it under ~150 lines — this is a summary, not a log. Prune stale detail.
 
 ## Current Status
-- **Current phase:** Phase 5 done (accuracy passes; latency target NOT met — see below and Decision #12); Phase 6 (FastAPI serving) not started
+- **Current phase:** Phase 6 (FastAPI serving) code written + unit-tested; NOT yet run as a live server / manually curled
 - **Last session date:** 2026-07-22
-- **Last thing completed:** Ran Phase 5 on Colab. `metrics/onnx_quantized.json`: ONNX-INT8 macro F1 0.5547 — actually *higher* than PyTorch's 0.5513 (+0.0034), well within the 1% drop budget; `f1_drop_within_budget()` correctly reported this as passing. `metrics/latency_benchmark.json`: hardware was Colab's free-tier CPU (`Intel(R) Xeon(R) CPU @ 2.00GHz`, only 2 vCPUs) — p95 latency PyTorch 192.3ms, ONNX-FP32 189.3ms, **ONNX-INT8 162.4ms**. Quantization gave a real ~15% p95 reduction over PyTorch, but Phases.md's acceptance target is p95 < 50ms, so this is a **3x miss**, driven by the weak shared Colab hardware rather than a code problem. Hit a real bug along the way (now fixed, see Decision #11): `ORTQuantizer.quantize()` names its output `model_quantized.onnx`, not the `model.onnx` default `ORTModelForSequenceClassification.from_pretrained()` looks for — both `export_onnx.py` and `benchmark.py` now pass `file_name=QUANTIZED_FILE_NAME` explicitly when loading an INT8 directory.
-- **Next immediate task:** Phase 6 — FastAPI serving (`src/serving/app.py`, `POST /moderate`, `GET /health`, Pydantic schemas, `tests/test_api.py` with TestClient). Loads the ONNX session (INT8, since it passed accuracy) at lifespan startup and returns per-label scores + allow/flag/block decision (using `configs/thresholds.json`) + measured latency_ms per request.
+- **Last thing completed:** Wrote `src/serving/schemas.py` (`ModerateRequest` with `min_length=1, max_length=5000` — Pydantic validation alone produces the required 422s), `src/serving/inference.py` (`ModerationModel` wraps the ONNX session + tokenizer, optimum/transformers imports deferred inside `__init__` same pattern as Decision #9; `decide()` is pure per-label threshold logic — most-severe-label-wins across `block`/`flag`/`allow`, reusing `configs/thresholds.json`'s per-label thresholds per Decision #10), `src/serving/app.py` (lifespan-loaded singleton model per Architecture.md Decision #1, `GET /health`, `POST /moderate` returning scores+decision+latency_ms, 503 if model failed to load, 500 via `InferenceError` on inference failure — never leaks stack traces). Serves the **INT8** ONNX model (`models/onnx/int8/`, `file_name=QUANTIZED_FILE_NAME`) since Phase 5 confirmed it beats the accuracy budget. Installed `fastapi`/`uvicorn`/`pydantic`/`httpx` into `.venv_phase1` (lightweight, ~small footprint, fine given disk freed up to ~10GB by this session — unlike torch these were safe to add locally). `tests/test_inference.py` (5 tests, pure `decide()` logic) and `tests/test_api.py` (8 tests, FastAPI TestClient against a `FakeModel` injected into `app._state` — deliberately avoids needing real ONNX weights locally, and avoids writing real toxic text per Rules.md by keying the fake model's canned scores instead of real classification) — **all 13 pass**.
+- **Known gap:** the server has never actually been started (`uvicorn src.serving.app:app`) or curled for real — Phase 6's acceptance criterion needs that, and it needs the real ONNX INT8 model files, which only exist on Drive right now (never pulled to this local repo, same situation as the PyTorch model since Phase 3).
+- **Next immediate task:** Pull `models/onnx/int8/` (and ideally `models/onnx/fp32/` for completeness) down from Drive to this local repo, run `uvicorn src.serving.app:app --reload`, and manually curl `/health` and `/moderate` to close out Phase 6's acceptance criterion, then move to Phase 7 (demo + README).
 
 ## Phase Checklist
 - [x] Phase 0 — Skeleton
@@ -17,7 +18,7 @@
 - [x] Phase 3 — DistilBERT fine-tune (`metrics/distilbert.json`: macro F1 0.5513, macro PR-AUC 0.5857, beats baseline; model saved to Drive via `notebooks/02_train_colab.ipynb`)
 - [x] Phase 4 — Evaluation & thresholds (`configs/thresholds.json`, `metrics/pr_curves/`, `metrics/error_analysis.md` all present)
 - [x] Phase 5 — ONNX + benchmark (`metrics/onnx_quantized.json`, `metrics/latency_benchmark.json` present; accuracy passes, **latency target (p95<50ms) NOT met on Colab's weak CPU** — see Decision #12)
-- [ ] Phase 6 — FastAPI serving
+- [ ] Phase 6 — FastAPI serving (code + tests done; not yet run live / manually curled — needs ONNX model pulled from Drive)
 - [ ] Phase 7 — Demo + README
 - [ ] Phase 8 — Extras (optional)
 
@@ -52,7 +53,7 @@
 ## Environment Notes
 - Training: Colab (GPU type: TBD). Inference benchmarks: (CPU model: TBD — record exactly, it goes in the README).
 - Kaggle credentials: `~/.kaggle/kaggle.json`, built from username `aniketpatil0904` + a newer-style `KGAT_`-prefixed API token (Kaggle's classic `kaggle.json` schema still works with these tokens in the `key` field). Never committed. Both competition rules accepted by the user.
-- Local verification uses a lightweight venv (`.venv_phase1`, gitignored) with just `pandas numpy pyarrow scikit-learn pytest pyyaml kaggle tqdm` — NOT the full `requirements.txt` (torch/transformers/onnxruntime are only needed from Phase 3 onward and are heavy; install those only when actually training).
+- Local verification uses a lightweight venv (`.venv_phase1`, gitignored) with `pandas numpy pyarrow scikit-learn pytest pyyaml kaggle tqdm` plus (as of Phase 6) `fastapi uvicorn pydantic httpx` — still NOT the full `requirements.txt` (torch/transformers/onnxruntime/optimum remain heavy and Colab-only; install those locally only if actually needed, e.g. to run the real server for Phase 6's manual-curl step). Disk freed up to ~10GB by 2026-07-22 (was ~4.1GB earlier this project) — re-check `df -h /` before any large install regardless, this has fluctuated a lot across sessions.
 
 ## File Map Quick Reference (update if structure drifts from Architecture.md)
 - Entry points: `src/data/preprocess.py`, `src/models/baseline.py`, `src/models/train.py`, `src/models/export_onnx.py`, `src/evaluation/benchmark.py`, `src/serving/app.py`, `demo/streamlit_app.py`
